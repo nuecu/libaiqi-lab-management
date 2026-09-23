@@ -16,9 +16,9 @@
 - Vue 3 + Vite + Element Plus
 - Pinia（状态管理）+ Vue Router（异步路由守卫）
 
-**部署**
-- Docker 容器化交付
-- Nginx 反向代理 + 静态资源托管
+**运行方式**
+- 前后端分离独立运行：后端由 Spring Boot 内嵌 Tomcat 启动，前端由 Vite 构建 / 预览
+- 开发环境通过 Vite dev server 将 `/api` 代理到后端服务
 
 ## 核心功能
 
@@ -40,6 +40,7 @@
 3. **AI 受限问答**：系统提示词锁定领域 + 仅注入命中的知识库 + `[OUT_OF_SCOPE]` 标记 → 后端识别替换标准拒答话术 + 每轮落 `ai_chat_message`，可审计可判定。
 4. **操作日志**：AOP `@Around` 拦截所有写方法 + `@LogAction` 注解，异步 `@Async` 落库，采集 userId / operation / method / params / ip / cost。
 5. **前端权限指令**：全局 `v-permission` 指令 + `stores/permission.js` 的 `hasPermission`，无权限码自动移除 DOM；路由守卫 `async` 化，登录后首次导航 `await loadPermissions()` 自愈。
+6. **定时任务**：`@EnableScheduling` + `ReservationScheduledService` 的 `@Scheduled` 任务自动扫描并标记逾期未签到 / 爽约的预约，同步更新预约与实验日志状态，幂等可重复执行。
 
 ## 快速开始
 
@@ -99,9 +100,9 @@ npm run dev   # http://localhost:5173
 └── pom.xml
 ```
 
-## 部署
+## 运行说明
 
-生产环境推荐 Docker Compose 一键编排：`MySQL + Redis + 后端服务 + Nginx（前端静态资源 + /api 反代）`。
+本项目按上文「快速开始」在本地运行：后端 `mvn spring-boot:run`（内嵌 Tomcat 提供 REST 接口），前端 `npm run dev`（Vite 开发服务器通过 `/api` 代理访问后端）。容器化 / 反向代理等生产部署方案作为后续规划，当前仓库未包含相关配置。
 
 ## License
 
