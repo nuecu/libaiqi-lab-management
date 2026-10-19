@@ -24,9 +24,9 @@
 
 | 模块 | 说明 |
 |---|---|
-| 用户与权限 | RBAC 模型（4 类角色 / 40+ 权限码），JWT 鉴权，接口层 `@PreAuthorize` 细粒度控制 |
+| 用户与权限 | RBAC 模型（4 类角色 / 28 权限码），JWT 鉴权，接口层 `@PreAuthorize` 细粒度控制 |
 | 设备管理 | 设备台账、状态跟踪、报修与保养流程 |
-| 预约审批 | 预约规则校验（提前天数 / 时长 / 次数 / 资格等级），悲观锁防超订，签到签退全流程 |
+| 预约审批 | 预约规则校验（提前天数 / 时长 / 次数 / 资格等级），Redis 分布式锁防超订，签到签退全流程 |
 | 实验记录 | 与预约一一对应，双向状态同步，终态拦截 |
 | 危化品 | 领用 / 归还登记，库存与操作留痕 |
 | 公告管理 | 分类 CRUD、发布 / 撤回、富文本详情 |
@@ -36,7 +36,7 @@
 ## 项目亮点
 
 1. **权限体系**：`JwtAuthenticationFilter` 登录时装载权限码 + `ROLE_AUTHENTICATED` 到 `SecurityContext`；读写拆分（读用 `ROLE_AUTHENTICATED`、写用 `xxx:manage` 权限码）；`PermissionResolverService` 刻意只依赖 Repository 避免循环依赖。
-2. **防超订**：`findByIdForUpdate` 悲观锁 + 事务边界，避免并发预约同一时段。
+2. **防超订**：基于 Redis（Redisson）分布式锁包裹数据库事务，抢锁 → 事务内校验+落库 → 提交 → 释放锁，串行化同一资源的并发预约；锁释放前数据已持久化，避免多请求 / 多实例在锁间隙读到未提交数据而重复预约。
 3. **AI 受限问答**：系统提示词锁定领域 + 仅注入命中的知识库 + `[OUT_OF_SCOPE]` 标记 → 后端识别替换标准拒答话术 + 每轮落 `ai_chat_message`，可审计可判定。
 4. **操作日志**：AOP `@Around` 拦截所有写方法 + `@LogAction` 注解，异步 `@Async` 落库，采集 userId / operation / method / params / ip / cost。
 5. **前端权限指令**：全局 `v-permission` 指令 + `stores/permission.js` 的 `hasPermission`，无权限码自动移除 DOM；路由守卫 `async` 化，登录后首次导航 `await loadPermissions()` 自愈。
