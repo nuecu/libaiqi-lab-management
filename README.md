@@ -44,51 +44,96 @@
 
 ## 快速开始
 
-### 环境要求
-- JDK 21+
-- Maven 3.8+
-- MySQL 8.0+
-- Redis 6+
-- Node.js 18+
+> 前后端分离：后端 Spring Boot 内嵌 Tomcat 监听 8080；前端 Vue3 + Vite 监听 5173，并通过 Vite 代理把 `/api` 转发到 `http://localhost:8080`。
 
-### 后端启动
+### 环境要求
+
+| 依赖 | 版本 | 说明 |
+|---|---|---|
+| JDK | 21+ | 后端编译/运行 |
+| Maven | 3.8+ | 后端构建（也可用自带 mvnw） |
+| MySQL | 8.0+ | 主数据库 |
+| Redis | 6+ | **必需**：集成 Redisson 分布式锁 + 权限缓存，未启动 Redis 后端会启动失败 |
+| Node.js | 18+ | 前端构建 |
+
+### 1. 克隆仓库
 
 ```bash
-# 1. 初始化数据库
-mysql -uroot -p < sql/init_data.sql
-
-# 2. 配置环境变量（application.properties 已改为读取环境变量）
-export DB_PASSWORD=your_mysql_password
-export JWT_SECRET=your_jwt_secret
-export DEEPSEEK_API_KEY=your_deepseek_key  # 可选，AI 助手功能需要
-
-# 3. 启动
-mvn spring-boot:run
+git clone https://github.com/nuecu/libaiqi-lab-management.git
+cd libaiqi-lab-management
 ```
 
-### 前端启动
+### 2. 初始化数据库
+
+执行 `sql/init_data.sql`，它会创建 `lab_management` 库、建表并灌入种子数据（用户/角色/权限/设备/预约等），且可重复执行：
+
+```bash
+mysql -uroot -p < sql/init_data.sql
+```
+
+- 种子账号登录密码统一为 `root`。
+- `sql/fix_missing_permissions.sql` 与 `sql/fix_missing_operation_permissions.sql` 是给「早期版本数据库」补权限码的幂等补丁；全新按本脚本初始化者无需执行，仅当旧库登录后写/审批/AI 操作报 403 时才补跑并清 Redis 缓存。
+
+### 3. 启动 Redis
+
+```bash
+redis-server            # macOS / Linux
+redis-server redis.windows.conf   # Windows
+```
+
+### 4. 启动后端（8080）
+
+```bash
+mvn spring-boot:run
+# 或： mvn -DskipTests package && java -jar target/*.jar
+```
+
+所有配置均支持环境变量覆盖，本地默认（MySQL root、空密码）不改即可直接运行：
+
+| 环境变量 | 默认 | 何时设置 |
+|---|---|---|
+| `DB_USERNAME` / `DB_PASSWORD` | root / (空) | MySQL 用户名/密码与默认不同时 |
+| `REDIS_HOST` / `REDIS_PASSWORD` | localhost / (空) | Redis 非本机或有密码 |
+| `JWT_SECRET` | 内置占位值 | 生产环境务必设置 |
+| `DEEPSEEK_API_KEY` | (空) | 需要 AI 问答功能时填入（不填不影响其它功能） |
+
+### 5. 启动前端（5173）
 
 ```bash
 cd frontend
 npm install
-npm run dev   # http://localhost:5173
+npm run dev
 ```
+
+浏览器打开 http://localhost:5173 。
 
 ### 默认账号
 
-种子密码统一为 `root`，包含管理员 / 教师 / 学生 / 维护人员四类角色账号，具体见 `sql/init_data.sql`。
+| 角色 | 用户名 | 密码 |
+|---|---|---|
+| 系统管理员 | admin | root |
+| 教师 | teacher1 / teacher2 | root |
+| 学生 | student1 / student2 / student3 | root |
+| 设备维护员 | maintainer1 | root |
+
+### 常见问题
+
+- **后端启动即报连不上 Redis**：先确认 Redis 已在 6379 运行，Redisson 是启动硬依赖。
+- **登录 500 / 数据库连不上**：确认 MySQL 已启动、库名 `lab_management`、必要时设置 `DB_USERNAME`/`DB_PASSWORD`。
+- **新增/编辑/审批/发布/AI 返回 403**：旧库缺操作权限码，补跑 `sql/fix_missing_operation_permissions.sql` → `redis-cli flushall` → 重新登录。
+- **改了角色/权限不生效**：权限缓存在 Redis `userPermissions`，`redis-cli flushall` 后重新登录即可。
 
 ## 项目结构
 
 ```
 .
 ├── src/main/java/org/example/libaiqi2023021108/
-│   ├── config/          # SecurityConfig / DeepSeekProperties / RedisConfig
+│   ├── config/          # SecurityConfig / JwtAuthenticationFilter / RedisConfig / RedissonConfig / DeepSeekProperties
 │   ├── controller/      # 8 大模块 REST 接口
 │   ├── service/         # 业务层
 │   ├── repository/      # JPA Repository
 │   ├── entity/          # 实体
-│   ├── security/        # JwtAuthenticationFilter / SecurityUtils
+│   ├── common/          # SecurityUtils / 通用工具
 │   ├── aspect/          # 操作日志 AOP
 │   └── exception/       # GlobalExceptionHandler
 ├── frontend/
