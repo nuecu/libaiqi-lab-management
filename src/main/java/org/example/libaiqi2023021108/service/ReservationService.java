@@ -15,10 +15,13 @@ import org.example.libaiqi2023021108.repository.LaboratoryRepository;
 import org.example.libaiqi2023021108.repository.ReservationRepository;
 import org.example.libaiqi2023021108.repository.ReservationRuleRepository;
 import org.example.libaiqi2023021108.repository.SysUserRepository;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDate;
@@ -27,6 +30,7 @@ import java.time.LocalTime;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 /**
  * 模块：预约管理
  * 功能：预约管理服务
@@ -41,16 +45,21 @@ public class ReservationService {
     private final ExperimentLogRepository experimentLogRepository;
     private final LaboratoryRepository laboratoryRepository;
     private final InstrumentRepository instrumentRepository;
+    private final RedissonClient redissonClient;
+    private final TransactionTemplate transactionTemplate;
 
     public ReservationService(ReservationRepository reservationRepository, ReservationRuleRepository ruleRepository,
                               SysUserRepository userRepository, ExperimentLogRepository experimentLogRepository,
-                              LaboratoryRepository laboratoryRepository, InstrumentRepository instrumentRepository) {
+                              LaboratoryRepository laboratoryRepository, InstrumentRepository instrumentRepository,
+                              RedissonClient redissonClient, TransactionTemplate transactionTemplate) {
         this.reservationRepository = reservationRepository;
         this.ruleRepository = ruleRepository;
         this.userRepository = userRepository;
         this.experimentLogRepository = experimentLogRepository;
         this.laboratoryRepository = laboratoryRepository;
         this.instrumentRepository = instrumentRepository;
+        this.redissonClient = redissonClient;
+        this.transactionTemplate = transactionTemplate;
     }
 
     // Rules
@@ -147,8 +156,34 @@ public class ReservationService {
         }
     }
 
-    @Transactional
+    /**
+     * 创建预约：使用 Redis 分布式锁（Redisson）串行化「同一资源」的并发预约，防止超订 / 时段冲突。
+     * 关键点：分布式锁必须包裹数据库事务——先抢锁 -> 开启事务做「校验+落库」-> 提交事务 -> 释放锁，
+     * 保证锁释放前数据已持久化，避免其它线程（或多实例）在锁间隙读到未提交数据而重复预约。
+     */
     public Reservation create(Reservation r) {
+        String lockKey = "lock:reservation:" + r.getResourceType() + ":" + r.getResourceId();
+        RLock lock = redissonClient.getLock(lockKey);
+        boolean acquired = false;
+        try {
+            // 最多等待 3 秒抢锁；持锁上限 30 秒（本业务为短事务，足够完成），到时自动释放以防死锁
+            acquired = lock.tryLock(3, 30, TimeUnit.SECONDS);
+            if (!acquired) {
+                throw new BusinessException("当前预约请求较多，请稍后重试");
+            }
+            return transactionTemplate.execute(status -> doCreate(r));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException("预约处理被中断，请稍后重试");
+        } finally {
+            if (acquired && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    /** 在分布式锁 + 事务保护下执行的实际校验与落库逻辑（同一资源的并发已被串行化，无需再对数据行加悲观锁） */
+    private Reservation doCreate(Reservation r) {
         // —— 基础时间校验 ——
         if (r.getReservationDate() == null) throw new BusinessException("预约日期不能为空");
         if (r.getStartTime() == null || r.getEndTime() == null || !r.getEndTime().isAfter(r.getStartTime())) {
@@ -159,15 +194,15 @@ public class ReservationService {
             throw new BusinessException("不能预约过去的日期");
         }
 
-        // —— 悲观锁锁定资源行，串行化对同一资源的并发预约（防超订）——
+        // —— 读取资源当前状态（跨实例并发已由 Redis 分布式锁串行化，此处用普通查询即可）——
         if ("LABORATORY".equals(r.getResourceType())) {
-            Laboratory lab = laboratoryRepository.findByIdForUpdate(r.getResourceId())
+            Laboratory lab = laboratoryRepository.findById(r.getResourceId())
                     .orElseThrow(() -> new BusinessException("实验室不存在"));
             if (lab.getStatus() != null && lab.getStatus() == 0) {
                 throw new BusinessException("该实验室当前不可预约");
             }
         } else if ("INSTRUMENT".equals(r.getResourceType())) {
-            Instrument inst = instrumentRepository.findByIdForUpdate(r.getResourceId())
+            Instrument inst = instrumentRepository.findById(r.getResourceId())
                     .orElseThrow(() -> new BusinessException("仪器不存在"));
             String st = inst.getStatus();
             if ("FAULT".equals(st) || "MAINTENANCE".equals(st) || "SCRAPPED".equals(st)) {
